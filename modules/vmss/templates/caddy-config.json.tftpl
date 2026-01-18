@@ -106,7 +106,24 @@
                               "max_events": 10
                             }
                           },
+%{ if rate_limit_storage_backend == "redis" ~}
+                          "storage": {
+                            "module": "redis",
+                            "address": ["${redis_host}:${redis_port}"],
+                            "password": "${redis_password}",
+                            "db": 1,
+                            "key_prefix": "caddy_rl",
+                            "timeout": "5",
+                            "tls_enabled": true,
+                            "tls_insecure": true
+                          },
+                          "distributed": {
+                            "write_interval": "1s",
+                            "read_interval": "1s"
+                          }
+%{ else ~}
                           "distributed": {}
+%{ endif ~}
                         }
                       ]
                     },

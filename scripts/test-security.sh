@@ -5,7 +5,18 @@
 # =============================================================================
 
 # Configuration - Set TARGET_URL environment variable or pass as first argument
-TARGET_URL="${1:-${TARGET_URL:-https://example.com}}"
+TARGET_URL="${1:-${TARGET_URL:-}}"
+
+# Check if TARGET_URL is provided
+if [[ -z "$TARGET_URL" ]]; then
+    echo "Error: TARGET_URL is required."
+    echo "Usage: $0 <target_url>"
+    echo "Example: $0 https://lb.on-azure.net"
+    exit 1
+fi
+
+# Ensure URL has trailing slash for consistent routing
+TARGET_URL="${TARGET_URL%/}/"
 
 # Colors
 RED='\033[0;31m'
@@ -89,17 +100,17 @@ test_connectivity() {
 test_rate_limiting() {
     print_section "2. Rate Limiting Tests (X-User-Id Header: 10 req/min)"
     
-    # Generate unique user ID for this test run
-    local test_user="test-user-$(date +%s)"
+    # Generate unique user ID for each test run to avoid conflicts with previous tests
+    local test_user="test-user-$(date +%s)-$$"
     log_info "Using test user: $test_user"
-    log_info "Sending 15 requests (limit is 10/min)..."
+    log_info "Sending 30 requests (limit is 10/min)..."
     echo ""
     
     local success=0
     local blocked=0
     local codes=""
     
-    for i in $(seq 1 15); do
+    for i in $(seq 1 30); do
         local code=$(curl -s -o /dev/null -w "%{http_code}" -k \
             -H "X-User-Id: $test_user" \
             "$TARGET_URL" 2>/dev/null)
