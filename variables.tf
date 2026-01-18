@@ -43,9 +43,9 @@ variable "subnet_address_prefix" {
 }
 
 variable "enable_ddos_protection" {
-  description = "Enable Azure DDoS Protection Standard (additional cost)"
+  description = "Enable Azure DDoS Protection Standard (additional cost ~$2,944/month)"
   type        = bool
-  default     = true
+  default     = false
 }
 
 # -----------------------------------------------------------------------------
