@@ -1,0 +1,51 @@
+# =============================================================================
+# Example tfvars file - Copy to terraform.tfvars and customize
+# =============================================================================
+
+# General Settings
+resource_group_name = "rg-caddy-cluster"
+location            = "eastasia"
+
+tags = {
+  Environment = "production"
+  Project     = "caddy-cluster"
+  ManagedBy   = "terraform"
+}
+
+# Network Settings
+vnet_address_space     = ["10.0.0.0/16"]
+subnet_address_prefix  = "10.0.1.0/24"
+enable_ddos_protection = true  # Set to false to save cost in dev/test
+
+# Storage Settings
+storage_account_tier     = "Standard"
+storage_replication_type = "ZRS"  # Zone-redundant storage
+file_share_quota_gb      = 100
+
+# Rate Limiting Storage Backend
+# Options: "azure_files" (default) or "redis"
+# - azure_files: Uses Azure Files for Caddy storage, lower cost
+# - redis: Uses Azure Redis Cache for Caddy storage, better for TLS cert sync across instances
+rate_limit_storage_backend = "azure_files"
+
+# VMSS Settings
+vmss_sku            = "Standard_B2s"  # 2 vCPU, 4GB RAM
+vmss_instance_count = 2               # Minimum 2 for HA
+admin_username      = "azureuser"
+
+# Generate SSH key: ssh-keygen -t rsa -b 4096 -f ~/.ssh/caddy_cluster_key
+admin_ssh_public_key = ""  # Paste your SSH public key here
+
+# Application Settings
+domain_name = "example.com"
+acme_email  = "admin@example.com"
+
+# Upstream servers - internal IPs or FQDNs
+upstream_servers = [
+  "10.0.2.10:8080",
+  "10.0.2.11:8080"
+]
+
+# Secrets (store securely, don't commit to git)
+# cloudflare_api_token = "your-cloudflare-api-token"
+# upstream_credentials = "{\"api_key\": \"secret\"}"

@@ -1,0 +1,248 @@
+#cloud-config
+# =============================================================================
+# Cloud-Init Configuration for Caddy with WAF and Rate Limiting
+# =============================================================================
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - jq
+  - cifs-utils
+  - unzip
+
+# Create necessary users and groups
+groups:
+  - caddy
+
+users:
+  - default
+  - name: caddy
+    system: true
+    shell: /usr/sbin/nologin
+    groups: [caddy]
+
+# Write configuration files
+write_files:
+  # SMB credentials for Azure Files
+  - path: /etc/smbcredentials/azurefiles.cred
+    permissions: '0600'
+    content: |
+      username=${storage_account_name}
+      password=${storage_account_key}
+
+  # Caddy configuration (JSON format for Admin API)
+  - path: /etc/caddy/config.json
+    permissions: '0644'
+    encoding: b64
+    content: ${caddy_config}
+
+  # Coraza WAF configuration
+  - path: /etc/caddy/coraza.conf
+    permissions: '0644'
+    encoding: b64
+    content: ${waf_config}
+
+  # Systemd service for Caddy
+  - path: /etc/systemd/system/caddy.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Caddy with WAF and Rate Limiting
+      Documentation=https://caddyserver.com/docs/
+      After=network.target network-online.target
+      Wants=network-online.target
+      Requires=mnt-caddyshare.mount
+
+      [Service]
+      Type=notify
+      User=caddy
+      Group=caddy
+      ExecStart=/usr/bin/caddy run --config /etc/caddy/config.json
+      ExecReload=/usr/bin/caddy reload --config /etc/caddy/config.json
+      TimeoutStopSec=5s
+      LimitNOFILE=1048576
+      LimitNPROC=512
+      PrivateTmp=true
+      ProtectSystem=full
+      AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+      # Environment
+      Environment=XDG_CONFIG_HOME=/etc
+      Environment=XDG_DATA_HOME=/var/lib
+      Environment=REDIS_HOST=${redis_host}
+      Environment=REDIS_PASSWORD=${redis_password}
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Systemd mount for Azure Files
+  - path: /etc/systemd/system/mnt-caddyshare.mount
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Azure Files Share for Caddy
+      After=network-online.target
+      Wants=network-online.target
+
+      [Mount]
+      What=//${storage_account_name}.file.core.windows.net/${file_share_name}
+      Where=/mnt/caddyshare
+      Type=cifs
+      Options=credentials=/etc/smbcredentials/azurefiles.cred,dir_mode=0755,file_mode=0644,uid=caddy,gid=caddy,serverino,nosharesock,actimeo=30,mfsymlinks
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Health check script
+  - path: /usr/local/bin/caddy-health-check.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Health check for Caddy
+      curl -sf http://127.0.0.1:80/health > /dev/null 2>&1
+      exit $?
+
+  # Rolling update script
+  - path: /usr/local/bin/caddy-rolling-update.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Rolling update script for Caddy configuration
+      set -e
+      
+      CONFIG_FILE="$${1:-/etc/caddy/config.json}"
+      ADMIN_API="http://127.0.0.1:2019"
+      
+      echo "Loading new configuration from $CONFIG_FILE..."
+      
+      # Load configuration via Admin API
+      if curl -sf -X PUT "$ADMIN_API/load" \
+        -H "Content-Type: application/json" \
+        -H "Cache-Control: must-revalidate" \
+        -d @"$CONFIG_FILE"; then
+        echo "Configuration loaded successfully"
+        
+        # Verify health
+        sleep 2
+        if /usr/local/bin/caddy-health-check.sh; then
+          echo "Health check passed"
+          exit 0
+        else
+          echo "Health check failed after config update"
+          exit 1
+        fi
+      else
+        echo "Failed to load configuration"
+        exit 1
+      fi
+
+runcmd:
+  # Create caddy user and group (cloud-init users module may not work on all images)
+  - groupadd --system caddy || true
+  - useradd --system --gid caddy --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy || true
+
+  # Create mount point
+  - mkdir -p /mnt/caddyshare
+
+  # Create Caddy directories
+  - mkdir -p /etc/caddy /var/lib/caddy /var/log/caddy
+
+  # Install Go (required for xcaddy)
+  - |
+    GO_VERSION="1.23.5"
+    curl -sSL "https://go.dev/dl/go$${GO_VERSION}.linux-amd64.tar.gz" | tar -xz -C /usr/local
+    export PATH=$PATH:/usr/local/go/bin
+    echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
+    # Enable toolchain download for newer Go versions if needed
+    export GOTOOLCHAIN=auto
+  
+  # Download and install xcaddy (build tool)
+  - |
+    export PATH=$PATH:/usr/local/go/bin
+    curl -sSL "https://github.com/caddyserver/xcaddy/releases/latest/download/xcaddy_$(curl -s https://api.github.com/repos/caddyserver/xcaddy/releases/latest | jq -r '.tag_name' | tr -d 'v')_linux_amd64.tar.gz" | tar -xz -C /tmp
+    mv /tmp/xcaddy /usr/local/bin/
+
+  # Build Caddy with required modules
+  - |
+    export PATH=$PATH:/usr/local/go/bin
+    export HOME=/root
+    export GOTOOLCHAIN=auto
+    cd /tmp
+    
+    # Build Caddy with modules based on storage backend
+    XCADDY_ARGS="--with github.com/corazawaf/coraza-caddy/v2 --with github.com/mholt/caddy-ratelimit --with github.com/caddy-dns/cloudflare"
+    
+    # Add Redis storage module if using Redis backend
+    if [ "${rate_limit_storage_backend}" = "redis" ]; then
+      XCADDY_ARGS="$XCADDY_ARGS --with github.com/pberkel/caddy-storage-redis"
+      echo "Building Caddy with Redis storage support..."
+    else
+      echo "Building Caddy with file system storage..."
+    fi
+    
+    /usr/local/bin/xcaddy build $XCADDY_ARGS --output /usr/bin/caddy
+    chmod +x /usr/bin/caddy
+    
+    # Verify modules
+    /usr/bin/caddy list-modules | grep -E "storage|rate"
+
+  # Set capabilities for Caddy binary
+  - setcap 'cap_net_bind_service=+ep' /usr/bin/caddy
+
+  # Set ownership
+  - chown -R caddy:caddy /etc/caddy /var/lib/caddy /var/log/caddy
+
+  # Enable and start Azure Files mount
+  - systemctl daemon-reload
+  - systemctl enable mnt-caddyshare.mount
+  - systemctl start mnt-caddyshare.mount
+
+  # Wait for mount and create directory structure
+  - |
+    sleep 5
+    mkdir -p /mnt/caddyshare/caddy-data
+    mkdir -p /mnt/caddyshare/waf/crs
+    mkdir -p /mnt/caddyshare/waf/custom
+    mkdir -p /mnt/caddyshare/releases
+    chown -R caddy:caddy /mnt/caddyshare
+
+  # Download OWASP CRS rules
+  - |
+    CRS_VERSION="4.0.0"
+    cd /tmp
+    curl -sSL "https://github.com/coreruleset/coreruleset/archive/refs/tags/v$${CRS_VERSION}.tar.gz" | tar -xz
+    cp -r coreruleset-$${CRS_VERSION}/rules/* /mnt/caddyshare/waf/crs/
+    cp coreruleset-$${CRS_VERSION}/crs-setup.conf.example /mnt/caddyshare/waf/crs/crs-setup.conf
+    rm -rf /tmp/coreruleset-*
+
+  # Create custom WAF rules placeholder
+  - |
+    cat > /mnt/caddyshare/waf/custom/custom-rules.conf << 'EOF'
+    # Custom WAF Rules
+    # Add your custom ModSecurity rules here
+    
+    # Example: Whitelist specific paths
+    # SecRule REQUEST_URI "@beginsWith /api/webhook" "id:10001,phase:1,pass,nolog,ctl:ruleRemoveById=941100"
+    
+    # Example: Block specific user agents
+    # SecRule REQUEST_HEADERS:User-Agent "@contains BadBot" "id:10002,phase:1,deny,status:403,log,msg:'Blocked bad bot'"
+    EOF
+
+  # Set final permissions
+  - chown -R caddy:caddy /mnt/caddyshare
+
+  # Enable and start Caddy
+  - systemctl enable caddy.service
+  - systemctl start caddy.service
+
+  # Verify Caddy is running
+  - sleep 5
+  - systemctl status caddy.service
+
+final_message: "Caddy with WAF and Rate Limiting is ready! Cloud-init completed in $UPTIME seconds."

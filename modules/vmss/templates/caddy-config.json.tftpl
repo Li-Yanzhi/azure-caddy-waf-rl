@@ -1,0 +1,168 @@
+{
+  "admin": {
+    "listen": "127.0.0.1:2019",
+    "enforce_origin": false,
+    "origins": ["127.0.0.1"]
+  },
+  "logging": {
+    "logs": {
+      "default": {
+        "level": "INFO",
+        "encoder": {
+          "format": "json"
+        },
+        "writer": {
+          "output": "file",
+          "filename": "/var/log/caddy/access.log",
+          "roll": true,
+          "roll_size_mb": 100,
+          "roll_keep": 5
+        }
+      }
+    }
+  },
+%{ if rate_limit_storage_backend == "redis" ~}
+  "storage": {
+    "module": "redis",
+    "host": ["${redis_host}"],
+    "port": ["${redis_port}"],
+    "password": "${redis_password}",
+    "db": 0,
+    "key_prefix": "caddy",
+    "timeout": "5",
+    "tls_enabled": true,
+    "tls_insecure": true
+  },
+%{ else ~}
+  "storage": {
+    "module": "file_system",
+    "root": "/mnt/caddyshare/caddy-data"
+  },
+%{ endif ~}
+  "apps": {
+    "http": {
+      "servers": {
+        "main": {
+          "listen": [":80", ":443"],
+          "routes": [
+            {
+              "match": [
+                {
+                  "path": ["/health"]
+                }
+              ],
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 200,
+                  "headers": {
+                    "Content-Type": ["application/json"]
+                  },
+                  "body": "{\"status\":\"healthy\",\"service\":\"caddy\",\"storage\":\"${rate_limit_storage_backend}\"}"
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "match": [
+                {
+                  "host": ["${domain_name}"]
+                }
+              ],
+              "handle": [
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "handle": [
+                        {
+                          "handler": "rate_limit",
+                          "rate_limits": {
+                            "per_ip": {
+                              "key": "{http.request.remote.host}",
+                              "window": "1m",
+                              "max_events": 100
+                            },
+                            "per_user": {
+                              "match": [
+                                {
+                                  "header": {
+                                    "X-User-Id": ["*"]
+                                  }
+                                }
+                              ],
+                              "key": "{http.request.header.X-User-Id}",
+                              "window": "1m",
+                              "max_events": 10
+                            },
+                            "burst_protection": {
+                              "match": [
+                                {
+                                  "method": ["POST", "PUT", "DELETE", "PATCH"]
+                                }
+                              ],
+                              "key": "{http.request.remote.host}",
+                              "window": "1s",
+                              "max_events": 10
+                            }
+                          },
+                          "distributed": {}
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [
+                            {
+                              "dial": "www.bing.com:443"
+                            }
+                          ],
+                          "headers": {
+                            "request": {
+                              "set": {
+                                "Host": ["{http.reverse_proxy.upstream.hostport}"],
+                                "X-Real-IP": ["{http.request.remote.host}"],
+                                "X-Forwarded-For": ["{http.request.remote.host}"],
+                                "X-Forwarded-Proto": ["{http.request.scheme}"],
+                                "X-Forwarded-Host": ["{http.request.host}"]
+                              }
+                            }
+                          },
+                          "transport": {
+                            "protocol": "http",
+                            "tls": {}
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "automatic_https": {
+            "disable": false,
+            "disable_redirects": false
+          }
+        }
+      }
+    },
+    "tls": {
+      "automation": {
+        "policies": [
+          {
+            "subjects": ["${domain_name}"],
+            "issuers": [
+              {
+                "module": "acme",
+                "email": "${acme_email}"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
