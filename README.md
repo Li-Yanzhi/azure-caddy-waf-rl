@@ -1,120 +1,121 @@
 # Caddy Cluster with Azure DDoS Protection, WAF & Rate Limiting
 
-基于 Terraform 的 Azure 基础设施部署，实现高可用的 Caddy 反向代理集群，集成 DDoS 防护、WAF 和限流功能。
+[中文文档](README-zh.md)
 
-## 架构概览
+Terraform-based Azure infrastructure deployment for a highly available Caddy reverse proxy cluster with integrated DDoS protection, WAF, and rate limiting capabilities.
 
-![架构图](architecture.png)
+## Architecture Overview
 
+![Architecture Diagram](architecture.png)
 
-### 组件职责
+### Component Responsibilities
 
-| 层级 | 组件 | 职责 |
-|------|------|------|
-| L3/L4 | Azure DDoS Protection | 大流量清洗、攻击缓解 |
-| L4 | Standard Load Balancer | TCP 负载均衡、健康检查 |
-| L7 | Caddy + Coraza WAF | TLS 终止、WAF 检测/拦截 |
-| L7 | Caddy Rate Limit | 限流、防刷、配额管理 |
-| 存储 | Azure Redis Cache | TLS 证书跨实例共享 (可选) |
-| 存储 | Azure Files | WAF 规则、配置文件共享 |
+| Layer | Component | Responsibility |
+|-------|-----------|----------------|
+| L3/L4 | Azure DDoS Protection | Large-scale traffic scrubbing, attack mitigation |
+| L4 | Standard Load Balancer | TCP load balancing, health checks |
+| L7 | Caddy + Coraza WAF | TLS termination, WAF detection/blocking |
+| L7 | Caddy Rate Limit | Rate limiting, anti-abuse, quota management |
+| Storage | Azure Redis Cache | TLS certificate sharing across instances (optional) |
+| Storage | Azure Files | WAF rules, shared configuration files |
 
-## 目录结构
+## Directory Structure
 
 ```
 lb/
-├── main.tf                      # 主配置文件
-├── variables.tf                 # 变量定义
-├── outputs.tf                   # 输出定义
-├── terraform.tfvars.example     # 示例变量文件
+├── main.tf                      # Main configuration file
+├── variables.tf                 # Variable definitions
+├── outputs.tf                   # Output definitions
+├── terraform.tfvars.example     # Example variables file
 ├── modules/
-│   ├── network/                 # 网络模块 (VNet, NSG, DDoS, PIP)
-│   ├── storage/                 # 存储模块 (Storage Account, Azure Files)
-│   ├── keyvault/                # Key Vault 模块
-│   ├── redis/                   # Redis 模块 (可选，用于证书共享)
-│   ├── loadbalancer/            # 负载均衡器模块
-│   └── vmss/                    # VMSS 模块 (Caddy 集群)
+│   ├── network/                 # Network module (VNet, NSG, DDoS, PIP)
+│   ├── storage/                 # Storage module (Storage Account, Azure Files)
+│   ├── keyvault/                # Key Vault module
+│   ├── redis/                   # Redis module (optional, for certificate sharing)
+│   ├── loadbalancer/            # Load balancer module
+│   └── vmss/                    # VMSS module (Caddy cluster)
 │       └── templates/
-│           ├── cloud-init.yaml  # VM 初始化脚本
-│           ├── caddy-config.json # Caddy 配置
-│           └── coraza-config.conf # WAF 配置
+│           ├── cloud-init.yaml  # VM initialization script
+│           ├── caddy-config.json # Caddy configuration
+│           └── coraza-config.conf # WAF configuration
 └── scripts/
-    ├── rolling-update.sh        # 滚动更新脚本
-    ├── deploy-crs.sh            # 部署 OWASP CRS
-    ├── waf-mode.sh              # WAF 模式切换
-    └── check-health.sh          # 健康检查脚本
+    ├── rolling-update.sh        # Rolling update script
+    ├── deploy-crs.sh            # Deploy OWASP CRS
+    ├── waf-mode.sh              # WAF mode switching
+    └── check-health.sh          # Health check script
 ```
 
-## 快速开始
+## Quick Start
 
-### 1. 准备工作
+### 1. Prerequisites
 
 ```bash
-# 安装 Terraform (>= 1.5.0)
-# 安装 Azure CLI 并登录
+# Install Terraform (>= 1.5.0)
+# Install Azure CLI and login
 az login
 az account set --subscription <your-subscription-id>
 ```
 
-### 2. 配置变量
+### 2. Configure Variables
 
 ```bash
-# 复制示例配置
+# Copy example configuration
 cp terraform.tfvars.example terraform.tfvars
 
-# 编辑配置
+# Edit configuration
 vim terraform.tfvars
 ```
 
-必填变量：
-- `domain_name`: 您的域名 (例如 `example.com`)
-- `acme_email`: ACME 证书注册邮箱
-- `upstream_servers`: 上游服务器列表
-- `admin_ssh_public_key`: SSH 公钥 (可选，不填则自动生成)
+Required variables:
+- `domain_name`: Your domain name (e.g., `example.com`)
+- `acme_email`: ACME certificate registration email
+- `upstream_servers`: List of upstream servers
+- `admin_ssh_public_key`: SSH public key (optional, auto-generated if not provided)
 
-可选变量：
-- `rate_limit_storage_backend`: 存储后端选择 (`azure_files` 或 `redis`，默认 `azure_files`)
+Optional variables:
+- `rate_limit_storage_backend`: Storage backend selection (`azure_files` or `redis`, default `azure_files`)
 
-### 3. 部署
+### 3. Deploy
 
 ```bash
-# 初始化
+# Initialize
 terraform init
 
-# 预览
+# Preview
 terraform plan
 
-# 部署
+# Deploy
 terraform apply
 ```
 
-### 4. DNS 配置
+### 4. DNS Configuration
 
-部署完成后，将域名指向输出的公网 IP：
+After deployment, point your domain to the output public IP:
 
 ```bash
-# 获取公网 IP
+# Get public IP
 terraform output public_ip_address
 ```
 
-## 存储后端配置
+## Storage Backend Configuration
 
-### 存储后端选择
+### Storage Backend Selection
 
-Caddy 的 storage 模块用于存储 TLS 证书和 ACME 数据。支持两种后端：
+Caddy's storage module is used for storing TLS certificates and ACME data. Two backends are supported:
 
-| 后端 | 配置值 | 说明 | 适用场景 |
-|------|--------|------|----------|
-| Azure Files | `azure_files` | 使用文件系统存储 | 默认选项，简单可靠 |
-| Azure Redis | `redis` | 使用 Redis 存储 | 多实例证书快速同步 |
+| Backend | Config Value | Description | Use Case |
+|---------|--------------|-------------|----------|
+| Azure Files | `azure_files` | File system storage | Default option, simple and reliable |
+| Azure Redis | `redis` | Redis storage | Fast certificate sync across multiple instances |
 
 ```hcl
 # terraform.tfvars
-rate_limit_storage_backend = "redis"  # 或 "azure_files"
+rate_limit_storage_backend = "redis"  # or "azure_files"
 ```
 
-### Redis 存储配置
+### Redis Storage Configuration
 
-选择 `redis` 后，Caddy 配置自动使用 Azure Redis Cache：
+When `redis` is selected, Caddy configuration automatically uses Azure Redis Cache:
 
 ```json
 {
@@ -128,38 +129,38 @@ rate_limit_storage_backend = "redis"  # 或 "azure_files"
 }
 ```
 
-**注意**：Rate Limit 数据仍在内存中管理，每个 Caddy 实例独立计数。Redis 主要用于 TLS 证书共享。
+**Note**: Rate Limit data is still managed in memory, with each Caddy instance counting independently. Redis is primarily used for TLS certificate sharing.
 
-### Azure Files 共享目录
+### Azure Files Shared Directory
 
-无论使用哪种存储后端，Azure Files 仍用于存储 WAF 规则。
+Regardless of the storage backend chosen, Azure Files is still used for storing WAF rules.
 
-挂载路径: `/mnt/caddyshare`
+Mount path: `/mnt/caddyshare`
 
 ```
 caddyshare/
-├── caddy-data/      # 证书数据 (仅 azure_files 模式使用)
+├── caddy-data/      # Certificate data (azure_files mode only)
 ├── waf/
-│   ├── crs/         # OWASP CRS 规则
-│   └── custom/      # 自定义 WAF 规则
-└── releases/        # 配置版本 (用于回滚)
+│   ├── crs/         # OWASP CRS rules
+│   └── custom/      # Custom WAF rules
+└── releases/        # Configuration versions (for rollback)
 ```
 
-## WAF 配置
+## WAF Configuration
 
-使用 [Coraza WAF](https://coraza.io/) 模块，通过 Caddy JSON 配置内联规则。
+Uses the [Coraza WAF](https://coraza.io/) module with inline rules via Caddy JSON configuration.
 
-### 当前启用的规则
+### Currently Enabled Rules
 
-| 规则 ID | 类型 | 描述 |
-|---------|------|------|
-| 942100 | SQL 注入 | 使用 `@detectSQLi` 检测 SQL 注入攻击 |
-| 941100 | XSS 攻击 | 使用 `@detectXSS` 检测跨站脚本攻击 |
-| 930100 | 路径遍历 | 检测 `../` 路径遍历尝试 |
-| 932100 | 命令注入 | 检测 `;` `|` `&&` 等命令注入符号 |
-| 913100 | 扫描器检测 | 阻止 sqlmap、nikto、nmap 等扫描工具 |
+| Rule ID | Type | Description |
+|---------|------|-------------|
+| 942100 | SQL Injection | Detects SQL injection attacks using `@detectSQLi` |
+| 941100 | XSS Attack | Detects cross-site scripting attacks using `@detectXSS` |
+| 930100 | Path Traversal | Detects `../` path traversal attempts |
+| 932100 | Command Injection | Detects command injection symbols like `;` `|` `&&` |
+| 913100 | Scanner Detection | Blocks scanners like sqlmap, nikto, nmap |
 
-### 配置示例
+### Configuration Example
 
 ```json
 {
@@ -168,37 +169,37 @@ caddyshare/
 }
 ```
 
-### 自定义规则
+### Custom Rules
 
-可在 `directives` 字符串中添加自定义 SecRule：
+You can add custom SecRules in the `directives` string:
 
 ```
-# 白名单特定路径
+# Whitelist specific path
 SecRule REQUEST_URI "@beginsWith /api/webhook" \
     "id:100001,phase:1,pass,nolog,ctl:ruleRemoveById=941100"
 
-# 阻止特定 User-Agent
+# Block specific User-Agent
 SecRule REQUEST_HEADERS:User-Agent "@contains BadBot" \
     "id:100002,phase:1,deny,status:403,log,msg:'Blocked bad bot'"
 ```
 
-### 查看日志
+### View Logs
 
 ```bash
-# Caddy 日志（包含 WAF 事件）
+# Caddy logs (including WAF events)
 journalctl -u caddy -f
 ```
 
-## 限流配置
+## Rate Limiting Configuration
 
-Caddy 配置中已包含两层限流：
+Caddy configuration includes two layers of rate limiting:
 
-| 规则 | Key | 窗口 | 限制 | 说明 |
-|------|-----|------|------|------|
-| per_ip | `{remote_host}` | 1分钟 | 100 请求 | IP 级别通用限制 |
-| per_user | `{header.X-User-Id}` | 1分钟 | 10 请求 | 基于 Header 的用户限制 |
+| Rule | Key | Window | Limit | Description |
+|------|-----|--------|-------|-------------|
+| per_ip | `{remote_host}` | 1 minute | 100 requests | IP-level general limit |
+| per_user | `{header.X-User-Id}` | 1 minute | 10 requests | Header-based user limit |
 
-### 配置示例
+### Configuration Example
 
 ```json
 {
@@ -216,93 +217,93 @@ Caddy 配置中已包含两层限流：
 }
 ```
 
-修改限流参数后需运行滚动更新。
+A rolling update is required after modifying rate limit parameters.
 
-## 滚动更新
+## Rolling Update
 
-### 更新配置
+### Update Configuration
 
 ```bash
-# 准备新配置
+# Prepare new configuration
 vim /etc/caddy/config.json
 
-# 执行滚动更新
+# Execute rolling update
 ./scripts/rolling-update.sh \
     -g rg-caddy-cluster \
     -v vmss-caddy-xxx \
     -c /etc/caddy/config.json
 ```
 
-### 更新 WAF 规则
+### Update WAF Rules
 
 ```bash
-# 部署新版本 CRS
+# Deploy new CRS version
 ./scripts/deploy-crs.sh -s <storage-account> -v 4.0.0
 
-# 滚动重载
+# Rolling reload
 ./scripts/rolling-update.sh -v <vmss-name> -c /etc/caddy/config.json
 ```
 
-## 监控与日志
+## Monitoring & Logging
 
-### 日志位置
+### Log Locations
 
-| 日志 | 路径 | 说明 |
-|------|------|------|
-| 访问日志 | `/var/log/caddy/access.log` | HTTP 请求日志 |
-| WAF 日志 | `/var/log/caddy/waf.log` | WAF 事件日志 |
-| 审计日志 | `/var/log/caddy/waf-audit.log` | 详细审计日志 |
+| Log | Path | Description |
+|-----|------|-------------|
+| Access Log | `/var/log/caddy/access.log` | HTTP request logs |
+| WAF Log | `/var/log/caddy/waf.log` | WAF event logs |
+| Audit Log | `/var/log/caddy/waf-audit.log` | Detailed audit logs |
 
 ### Azure Monitor
 
-VMSS 已安装 Azure Monitor Agent，可在 Azure Portal 查看：
-- CPU/内存使用率
-- 网络流量
-- 自定义指标
+VMSS has Azure Monitor Agent installed. View in Azure Portal:
+- CPU/Memory utilization
+- Network traffic
+- Custom metrics
 
-## 安全建议
+## Security Recommendations
 
-1. **Key Vault**: 所有敏感信息存储在 Key Vault
-2. **私有端点**: Storage、Key Vault、Redis 均使用私有端点
-3. **NSG**: 仅允许必要端口 (80, 443, 22, 6380 内部)
-4. **SSH 访问**: 仅 VNet 内可 SSH
-5. **Admin API**: 仅监听 localhost (127.0.0.1:2019)
-6. **Redis TLS**: 仅启用 SSL 端口 (6380)，禁用非 SSL 端口
+1. **Key Vault**: All sensitive information stored in Key Vault
+2. **Private Endpoints**: Storage, Key Vault, Redis all use private endpoints
+3. **NSG**: Only necessary ports allowed (80, 443, 22, 6380 internal)
+4. **SSH Access**: SSH only accessible within VNet
+5. **Admin API**: Listens only on localhost (127.0.0.1:2019)
+6. **Redis TLS**: SSL port only (6380), non-SSL port disabled
 
-## 成本估算
+## Cost Estimation
 
-主要成本组件：
-- Azure DDoS Protection Standard: ~$2,944/月 (可选，设置 `enable_ddos_protection = false` 禁用)
-- Standard Load Balancer: ~$18/月 + 数据处理费
-- VMSS (2x Standard_B2s): ~$60/月
-- Storage Account (ZRS): ~$2/月 (100GB)
-- Key Vault: ~$3/月
-- Azure Redis Cache (Basic C0): ~$16/月 (已包含，用于证书共享)
+Main cost components:
+- Azure DDoS Protection Standard: ~$2,944/month (optional, set `enable_ddos_protection = false` to disable)
+- Standard Load Balancer: ~$18/month + data processing fees
+- VMSS (2x Standard_B2s): ~$60/month
+- Storage Account (ZRS): ~$2/month (100GB)
+- Key Vault: ~$3/month
+- Azure Redis Cache (Basic C0): ~$16/month (included for certificate sharing)
 
-## 安全测试
+## Security Testing
 
-使用 `scripts/test-security.sh` 脚本测试 Rate Limiting 和 WAF 功能：
+Use the `scripts/test-security.sh` script to test Rate Limiting and WAF functionality:
 
 ```bash
 cd scripts
 ./test-security.sh
 ```
 
-### 测试项目
+### Test Items
 
-| 类别 | 测试项 | 预期结果 |
-|------|--------|----------|
-| 连通性 | HTTPS 连接 | 200 OK |
-| 连通性 | /health 端点 | healthy |
-| Rate Limit | X-User-Id (10/min) | 第 11 个请求返回 429 |
-| WAF | SQL 注入 (`' OR '1'='1`) | 403 Forbidden |
+| Category | Test Item | Expected Result |
+|----------|-----------|-----------------|
+| Connectivity | HTTPS connection | 200 OK |
+| Connectivity | /health endpoint | healthy |
+| Rate Limit | X-User-Id (10/min) | 11th request returns 429 |
+| WAF | SQL Injection (`' OR '1'='1`) | 403 Forbidden |
 | WAF | XSS (`<script>`) | 403 Forbidden |
-| WAF | 路径遍历 (`../`) | 403 Forbidden |
-| WAF | 命令注入 (`;ls`) | 403 Forbidden |
-| WAF | 扫描器 User-Agent | 403 Forbidden |
-| 正常请求 | 普通浏览器请求 | 200 OK |
+| WAF | Path Traversal (`../`) | 403 Forbidden |
+| WAF | Command Injection (`;ls`) | 403 Forbidden |
+| WAF | Scanner User-Agent | 403 Forbidden |
+| Normal Request | Regular browser request | 200 OK |
 
-### 示例输出
+### Sample Output
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -319,38 +320,38 @@ cd scripts
   ◐ Most tests passed (85%). Some issues may need attention.
 ```
 
-## 故障排查
+## Troubleshooting
 
-### Caddy 服务问题
+### Caddy Service Issues
 
 ```bash
-# 查看服务状态
+# Check service status
 systemctl status caddy
 
-# 查看日志
+# View logs
 journalctl -u caddy -f
 
-# 测试配置
+# Validate configuration
 caddy validate --config /etc/caddy/config.json
 ```
 
-### Azure Files 挂载问题
+### Azure Files Mount Issues
 
 ```bash
-# 检查挂载状态
+# Check mount status
 mount | grep caddyshare
 
-# 重新挂载
+# Remount
 systemctl restart mnt-caddyshare.mount
 ```
 
-### 健康检查失败
+### Health Check Failures
 
 ```bash
-# 本地测试
+# Local test
 curl -v http://127.0.0.1/health
 
-# 批量检查
+# Batch check
 ./scripts/check-health.sh -v <vmss-name>
 ```
 
